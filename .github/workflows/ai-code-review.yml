@@ -1,0 +1,79 @@
+name: "AI Code Review"
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Full history needed to compute diffs accurately
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Dependencies
+        run: npm install @google/genai
+
+      - name: Extract Pull Request Diff
+        run: |
+          git diff origin/${{ github.base_ref }}...HEAD > pr_diff.patch
+
+      - name: Run Review Engine
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: node .github/scripts/ai-reviewer.mjs
+
+      - name: Post Review Comment on Pull Request
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            if (fs.existsSync('REVIEW_REPORT.md')) {
+              const body = fs.readFileSync('REVIEW_REPORT.md', 'utf8');
+              
+              // Find existing AI review comment to update it rather than spamming new comments
+              const { data: comments } = await github.rest.issues.listComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+              });
+
+              const botMarker = "<!-- AI_CODE_REVIEW_MARKER -->";
+              const commentBody = `${botMarker}\n${body}`;
+
+              const existingComment = comments.find(c => c.body.includes(botMarker));
+
+              if (existingComment) {
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: existingComment.id,
+                  body: commentBody
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body: commentBody
+                });
+              }
+            }
+
+      - name: Upload Review Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-code-review
+          path: REVIEW_REPORT.md
