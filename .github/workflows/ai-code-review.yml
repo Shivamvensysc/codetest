@@ -7,6 +7,7 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  issues: write
 
 jobs:
   review:
@@ -16,19 +17,27 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Full history needed to compute diffs accurately
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - name: Install Dependencies
+      - name: Install Google GenAI SDK
         run: npm install @google/genai
 
       - name: Extract Pull Request Diff
         run: |
-          git diff origin/${{ github.base_ref }}...HEAD > pr_diff.patch
+          echo "Fetching target base branch: ${{ github.base_ref }}"
+          git fetch origin ${{ github.base_ref }}:${{ github.base_ref }} || git fetch origin ${{ github.base_ref }}
+          
+          # Generate diff against target branch
+          git diff origin/${{ github.base_ref }}...HEAD > pr_diff.patch || git diff ${{ github.base_ref }}...HEAD > pr_diff.patch
+          
+          echo "=== Diff Preview ==="
+          head -n 40 pr_diff.patch
+          echo "===================="
 
       - name: Run Review Engine
         env:
@@ -42,18 +51,16 @@ jobs:
             const fs = require('fs');
             if (fs.existsSync('REVIEW_REPORT.md')) {
               const body = fs.readFileSync('REVIEW_REPORT.md', 'utf8');
-              
-              // Find existing AI review comment to update it rather than spamming new comments
+              const botMarker = "<!-- AI_CODE_REVIEW_MARKER -->";
+              const commentBody = `${botMarker}\n${body}`;
+
               const { data: comments } = await github.rest.issues.listComments({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.issue.number,
               });
 
-              const botMarker = "<!-- AI_CODE_REVIEW_MARKER -->";
-              const commentBody = `${botMarker}\n${body}`;
-
-              const existingComment = comments.find(c => c.body.includes(botMarker));
+              const existingComment = comments.find(c => c.body && c.body.includes(botMarker));
 
               if (existingComment) {
                 await github.rest.issues.updateComment({
@@ -73,7 +80,9 @@ jobs:
             }
 
       - name: Upload Review Artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pr-code-review
           path: REVIEW_REPORT.md
+          if-no-files-found: warn
